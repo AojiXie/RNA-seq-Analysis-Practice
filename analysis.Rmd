@@ -1,0 +1,174 @@
+---
+title: "edgeR_pipeline"
+author: "AXIE"
+date: "December 11, 2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+##packages
+```{r}
+library(Rsubread)
+library(ggplot2)
+library(org.Mm.eg.db)
+library(dplyr)
+library(limma)
+library(edgeR)
+
+setwd("~/Desktop/set18_RNAseq/sample/featureCounts")
+```
+
+##Count Reads using Feature Counts
+```{r}
+##write the counts table into txt file
+#fls = dir(".","bam")
+#x = featureCounts(files = fls, annot.inbuilt = "mm10", GTF.featureType = "gene",GTF.attrType = "gene_id")
+
+#write.table(x = data.frame(x$annotation, x$counts, stringsAsFactors=FALSE),file="test-counts.txt", quote=FALSE, sep="\t", row.names = FALSE)
+
+## read the counts table and change the colnames
+set18 = read.table("test-counts.txt", header = TRUE, quote = '\t', skip = 1)
+
+names(set18) = c("GeneID","Chr","Start","End","Strand","Length","KO1","KO2","WT1","WT2")
+head(set18)
+
+#anyDuplicated(set18$GeneID)
+```
+
+#Generate Count Matrix
+
+```{r}
+countMatrix = set18[7:10]
+
+rownames(countMatrix) = set18$GeneID
+head(countMatrix)
+```
+#Generate DGEList Object
+
+```{r}
+group = c("KO","KO","WT","WT")
+y = DGEList(counts = countMatrix,  genes = set18[,1], group = group) 
+## filter weakly expressed features 
+keep <- rowSums(cpm(y)>1) >= 2
+y <- y[keep, , keep.lib.sizes=FALSE]
+
+```
+
+
+#Estimate Normalization Factors
+```{r}
+
+y = calcNormFactors(y)
+
+```
+#Inspect the relationships between samples using multidimensional scaling plot
+```{r}
+plotMDS(y, labels  = y$group, col = c("darkgreen","blue"))
+```
+
+
+```{r}
+d= estimateCommonDisp(y)
+d = estimateTagwiseDisp(d)
+
+plotMeanVar(d, show.tagwise.vars = TRUE, NBline = TRUE)
+plotBCV(d)
+
+```
+# Differential gene expression 
+```{r}
+
+de = exactTest(d, pair = c("KO","WT"))
+tt= topTags(de)
+head(tt$table)
+nrow(de)
+## jump to the next de gene expression to plot and write the table 
+```
+
+
+
+##Differential expression analysis using design matrix (2)
+
+```{r}
+#design matrix
+replicate = factor(c("1","2","1","2"))
+group = factor(c("WT","WT","KO","KO"))
+
+design = model.matrix(~ 0+ group + replicate)
+rownames(design) = colnames(y)
+design
+```
+
+```{r}
+d2 = estimateDisp(y, design, robust = TRUE)
+#d2  = estimateGLMTagwiseDisp(d2,design)
+d2$common.dispersion
+
+#plotMeanVar(d2, show.tagwise.vars = TRUE, NBline = TRUE)
+plotBCV(d2)
+```
+
+```{r}
+fit = glmQLFit(d2, design)
+qlf = glmQLFTest(fit,contrast = c(-1,1,0))
+tt1 = topTags(qlf)
+#cpm(y)
+#colnames(design)
+
+head(tt1$table)
+summary(decideTests(qlf))
+#qlf
+plotMD(qlf)
+
+```
+
+
+#Get the differential expressed genes and write to table 
+```{r}
+
+threshold = as.factor(ifelse(qlf$table$PValue<0.05 & abs(qlf$table$logFC) > 1.5, ifelse(qlf$table$logFC > 1.5,"up","down"),"not"))
+
+# select the logFC > 1.5 or <-1.5 and the pValue < 0.05 genes , generate the table and plots
+qlfTable = qlf$table[qlf$table$PValue<0.05 & (qlf$table$logFC> 1.5 | qlf$table$logFC < -1.5),]
+head(qlfTable)
+# add the CPM of each gene in the table 
+deGeneID = rownames(qlf$table)
+deCPM = cpm(y)[deGeneID,]
+
+deGeneTable= merge(qlfTable, deCPM,by = 0)
+
+
+
+
+## rename the first col as "gene_id"
+colnames(deGeneTable)[1] = c("gene_id")
+
+## get the gene_id , gene_name table 
+egGENENAME = toTable(org.Mm.egSYMBOL)
+
+## merge above table and the deGeneTable, so that the gene name is added into the table.
+DEnameAndId=  inner_join(egGENENAME,deGeneTable,by = "gene_id")
+
+head(DEnameAndId)
+#class(egGENENAME$gene_id)
+#class(deGeneTable$gene_id)
+write.csv(DEnameAndId, file = "differential_expressed_genes.csv")
+
+## make vocano plot
+
+ggplot(qlf$table, aes(x = logFC, y = -log10(PValue),colour = threshold)) + geom_point() + scale_color_manual(values = c("blue","grey","red"))
+```
+## GO analysis
+```{r}
+go = goana(qlf, species = "Mm")
+topGO(go,sort = "down")
+```
+
+
+
